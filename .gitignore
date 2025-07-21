@@ -1,0 +1,7 @@
+# Python cache
+__pycache__/
+*.pyc
+
+# Virtual Environment folder (add the name of your venv folder here)
+venv/
+vr_venv/

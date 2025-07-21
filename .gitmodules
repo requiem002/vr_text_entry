@@ -1,0 +1,3 @@
+[submodule "libs/leapc_python_bindings"]
+	path = libs/leapc_python_bindings
+	url = https://github.com/requiem002/vr_text_entry.git
