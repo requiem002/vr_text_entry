@@ -9,3 +9,6 @@ vr_venv/
 typing_classifier/training_data/
 typing_classifier/quest_training_data/
 
+libs/
+
+vr_text_entry/leapc_python_bindings
