@@ -5,3 +5,7 @@ __pycache__/
 # Virtual Environment folder (add the name of your venv folder here)
 venv/
 vr_venv/
+
+typing_classifier/training_data/
+typing_classifier/quest_training_data/
+
