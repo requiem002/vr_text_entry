@@ -2,77 +2,80 @@ using UnityEngine;
 using Unity.Sentis;
 using System.Collections.Generic;
 using System.Linq;
+using System.Collections;
+
+
+//worker = SentisWorkerFactory.CreateWorker(SentisBackendType.GPUCompute, runtimeModel);
+
 
 public class TapDetector : MonoBehaviour
 {
     [Header("Model Settings")]
-    [Tooltip("The ONNX model asset file.")]
     public ModelAsset modelAsset;
-    [Tooltip("The probability threshold for detecting a tap.")]
-    [Range(0, 1)]
-    public float detectionThreshold = 0.7f;
+    [Range(0, 1)] public float detectionThreshold = 0.7f;
 
     [Header("Hand Tracking References")]
-    [Tooltip("Reference to the OVRHand for the right hand.")]
     public OVRHand rightHand;
-    [Tooltip("Reference to the OVRSkeleton for the right hand.")]
     public OVRSkeleton rightHandSkeleton;
 
-    // Sentis model execution engine
-    private IWorker engine;
-    // The size of the input window our model expects (e.g., 100 frames)
+    private Worker worker;                       // <-- IWorker
+    private Model runtimeModel;
+
     private const int windowSize = 100;
-    // The number of features per frame (e.g., pos_z, vel_z, accel_z)
     private const int numFeatures = 3;
 
-    // A queue to hold the sliding window of recent feature data
-    private Queue<float[]> featureWindow = new Queue<float[]>();
+    [Header("Feedback UI")]
+    [Tooltip("A UI element (e.g., an Image) to show when a tap is detected.")]
+    public GameObject tapIndicator; // <-- NEW: Reference to our UI element
 
-    // Variables for calculating velocity and acceleration
-    private Vector3 lastPosition;
-    private Vector3 lastVelocity;
+    private readonly Queue<float[]> featureWindow = new Queue<float[]>();
+    private Vector3 lastPosition, lastVelocity;
     private float lastTimestamp;
     private bool isInitialized = false;
 
     void Start()
     {
-        // 1. Load the model and create the inference engine
-        Model model = ModelLoader.Load(modelAsset);
-        engine = WorkerFactory.CreateWorker(BackendType.GPU, model);
+        // Load ONNX and create runtime model (no Functional.Compile needed unless you modify the graph)
+        runtimeModel = ModelLoader.Load(modelAsset);
 
-        // Initialize the feature window with zero-filled data
-        for (int i = 0; i < windowSize; i++)
+        // Create an engine (GPUCompute backend; falls back to CPU if unavailable)
+        //worker = WorkerFactory.CreateWorker(BackendType.GPUCompute, runtimeModel); // or BackendType.CPU
+        // :contentReference[oaicite:1]{index=1}
+
+        worker = new Worker(runtimeModel, BackendType.GPUCompute); // or BackendType.CPU
+
+        // Make sure the indicator is off at the start
+        if (tapIndicator != null)
         {
-            featureWindow.Enqueue(new float[numFeatures]);
+            tapIndicator.SetActive(false);
         }
+
+        for (int i = 0; i < windowSize; i++)
+            featureWindow.Enqueue(new float[numFeatures]);
     }
 
-    void OnDestroy()
+    void OnDisable()
     {
-        // Clean up the Sentis engine when the object is destroyed
-        engine?.Dispose();
+        worker?.Dispose(); // :contentReference[oaicite:2]{index=2}
     }
 
     void Update()
     {
-        // Ensure hand tracking is active and initialized
-        if (!rightHand.IsTracked)
-        {
-            isInitialized = false; // Reset if tracking is lost
-            return;
-        }
+        if (!rightHand || !rightHand.IsTracked || rightHandSkeleton == null)
+        { isInitialized = false; return; }
 
-        // 2. Get Live Hand Data
-        // We'll use the Right Index Fingertip (Distal joint)
-        OVRBone indexTipBone = rightHandSkeleton.Bones
+        var indexTipBone = rightHandSkeleton.Bones
             .FirstOrDefault(b => b.Id == OVRSkeleton.BoneId.Hand_IndexTip);
 
-        if (indexTipBone == null) return;
+        if (indexTipBone == null)
+        {
+            Debug.Log("Could not find Index Tip Bone!");
+            return;
+        }
 
         Vector3 currentPosition = indexTipBone.Transform.position;
         float currentTimestamp = Time.time;
 
-        // Initialize on the first valid frame
         if (!isInitialized)
         {
             lastPosition = currentPosition;
@@ -82,52 +85,65 @@ public class TapDetector : MonoBehaviour
             return;
         }
 
-        // 3. Calculate Live Features
-        float deltaTime = currentTimestamp - lastTimestamp;
-        if (deltaTime <= 0) return; // Avoid division by zero
+        float dt = currentTimestamp - lastTimestamp;
+        if (dt <= 0f) return;
 
-        Vector3 currentVelocity = (currentPosition - lastPosition) / deltaTime;
-        Vector3 currentAcceleration = (currentVelocity - lastVelocity) / deltaTime;
+        Vector3 currentVelocity = (currentPosition - lastPosition) / dt;
+        Vector3 currentAcceleration = (currentVelocity - lastVelocity) / dt;
 
-        // Create the feature array for the current frame
-        float[] currentFeatures = new float[numFeatures]
+        var currentFeatures = new float[numFeatures]
         {
             currentPosition.z,
             currentVelocity.z,
-
             currentAcceleration.z
         };
 
-        // 4. Update the Sliding Window
-        // Add the new frame's data and remove the oldest
         featureWindow.Dequeue();
         featureWindow.Enqueue(currentFeatures);
 
-        // 5. Run Inference
-        // Convert the queue of arrays into a single flat array
         float[] flatInput = featureWindow.SelectMany(f => f).ToArray();
-        // Create a tensor with the correct 3D shape: (1, windowSize, numFeatures)
-        using Tensor inputTensor = new TensorFloat(new TensorShape(1, windowSize, numFeatures), flatInput);
+        
+        using var input = new Tensor<float>(new TensorShape(1, windowSize, numFeatures), flatInput);
 
-        // Execute the model
-        engine.Execute(inputTensor);
+        //using var inputTensor = new TensorFloat(new TensorShape(1, windowSize, numFeatures), flatInput);
 
-        // Get the output tensor
-        TensorFloat outputTensor = engine.PeekOutput() as TensorFloat;
-        outputTensor.MakeReadable();
-        float prediction = outputTensor[0];
+        worker.Schedule(input);
 
-        // 6. Make a Decision
+        // If your model has one output, parameterless PeekOutput() is fine.
+        //var outputTensor = worker.PeekOutput() as TensorFloat;
+
+        var output = worker.PeekOutput() as Tensor<float>;
+        //outputTensor.CompleteOperationsAndDownload(); // make it CPU-readable :contentReference[oaicite:4]{index=4}
+        
+        
+        var arr = output.DownloadToArray();
+        //float prediction = outputTensor[0];
+        float prediction = arr[0];
+
+
         if (prediction > detectionThreshold)
-        {
-            // We detected a tap!
             Debug.Log($"TAP DETECTED! Confidence: {prediction:P0}");
-            // You can add a sound effect or visual feedback here
-        }
 
-        // Update state for the next frame
+            // --- NEW: Trigger the visual feedback ---
+            if (tapIndicator != null && !tapIndicator.activeInHierarchy)
+            {
+                StartCoroutine(ShowTapIndicator());
+            }
+
+        
+
         lastPosition = currentPosition;
         lastVelocity = currentVelocity;
         lastTimestamp = currentTimestamp;
+    }
+
+    // --- NEW: Coroutine to show the indicator for a short time ---
+    private IEnumerator ShowTapIndicator()
+    {
+        Debug.Log("Showing tap indicator");
+        tapIndicator.SetActive(true);
+        // Wait for 0.1 seconds
+        yield return new WaitForSeconds(0.05f);
+        tapIndicator.SetActive(false);
     }
 }
