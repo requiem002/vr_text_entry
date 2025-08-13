@@ -14,5 +14,6 @@ vr_text_entry/leapc_python_bindings
 typing_classifier/quest_training_data/*
 
 typing_classifier/eyal_0deg/
+typing_classifier/Archive/
 
 #!typing_classifier/quest_training_data/compressed/
